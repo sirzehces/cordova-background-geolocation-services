@@ -9,6 +9,7 @@ import org.json.JSONObject;
 
 import android.annotation.TargetApi;
 
+import android.app.NotificationChannel;
 import android.media.AudioManager;
 import android.media.ToneGenerator;
 
@@ -160,6 +161,22 @@ public class BackgroundLocationUpdateService
         criteria.setCostAllowed(true);
     }
 
+    private void createNotificationChannel() {
+        // Create the NotificationChannel, but only on API 26+ because
+        // the NotificationChannel class is new and not in the support library
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            CharSequence name = "BLOSPlugin";
+            String description = "Background Location Notifications";
+            int importance = NotificationManager.IMPORTANCE_DEFAULT;
+            NotificationChannel channel = new NotificationChannel("BLOSPlugin", name, importance);
+            channel.setDescription(description);
+            // Register the channel with the system; you can't change the importance
+            // or other notification behaviors after this
+            NotificationManager notificationManager = getSystemService(NotificationManager.class);
+            notificationManager.createNotificationChannel(channel);
+        }
+    }
+
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         Log.i(TAG, "Received start id " + startId + ": " + intent);
@@ -191,6 +208,10 @@ public class BackgroundLocationUpdateService
             builder.setContentTitle(notificationTitle);
             builder.setContentText(notificationText);
             builder.setSmallIcon(context.getApplicationInfo().icon);
+            builder.setPriority(Notification.PRIORITY_DEFAULT);
+            builder.setChannelId("BLOSPlugin");
+
+            createNotificationChannel();
 
             Bitmap bm = BitmapFactory.decodeResource(context.getResources(),
                                            context.getApplicationInfo().icon);
