@@ -8,6 +8,8 @@ import org.apache.cordova.PluginResult;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+import java.util.ArrayList;
+import java.util.List;
 
 import android.Manifest;
 import android.app.Activity;
@@ -44,6 +46,9 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
     public static final String ACTION_REGISTER_FOR_ACTIVITY_UPDATES = "registerForActivityUpdates";
 
     public static String APP_NAME = "";
+    
+    private List<PluginResult> locationUpdateQueue = new ArrayList<>();
+    private List<PluginResult> detectedActivitiesQueue = new ArrayList<>();
 
     private Boolean isEnabled = false;
     private Boolean inBackground = false;
@@ -120,6 +125,9 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
                     if(detectedActivitiesCallback != null) {
                         PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, daJSON);
                         pluginResult.setKeepCallback(true);
+                        if(inBackground){
+                            detectedActivitiesQueue.add(pluginResult);
+                        }
                         detectedActivitiesCallback.sendPluginResult(pluginResult);
                     }
                 }
@@ -141,6 +149,8 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
 
                 final Bundle b = intent.getExtras();
                 final String errorString = b.getString("error");
+                
+                
 
                 cordova.getThreadPool().execute(new Runnable() {
                     public void run() {
@@ -161,6 +171,9 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
 
                         if(pluginResult != null) {
                             pluginResult.setKeepCallback(true);
+                            if(inBackground){
+                                locationUpdateQueue.add(pluginResult);
+                            }
                             locationUpdateCallback.sendPluginResult(pluginResult);
                         }
                     }
@@ -334,6 +347,7 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
             Log.d(TAG, "- locationUpdateReceiver Paused (starting recording = " + String.valueOf(isEnabled) + ")");
         }
         if (isEnabled) {
+            inBackground = true;
             Activity activity = this.cordova.getActivity();
             activity.sendBroadcast(new Intent(Constants.START_RECORDING));
         }
@@ -345,9 +359,18 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
             Log.d(TAG, "- locationUpdateReceiver Resumed (stopping recording)" + String.valueOf(isEnabled));
         }
         if (isEnabled) {
+            inBackground = false;
             Activity activity = this.cordova.getActivity();
             activity.sendBroadcast(new Intent(Constants.STOP_RECORDING));
         }
+        for(PluginResult result : locationUpdateQueue){
+            locationUpdateCallback.sendPluginResult(result);
+        }
+        locationUpdateQueue.clear();
+        for(PluginResult result : detectedActivitiesQueue){
+            detectedActivitiesCallback.sendPluginResult(result);
+        }
+        detectedActivitiesQueue.clear();
     }
 
 
