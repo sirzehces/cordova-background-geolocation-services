@@ -79,7 +79,7 @@ public class BackgroundLocationUpdateService
         extends Service
         implements GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener {
 
-    private static final String TAG = "BackgroundLocationUpdateService";
+    private static final String TAG = "BgLocationUpdateService";
 
     private Location lastLocation;
     private DetectedActivity lastActivity;
@@ -209,7 +209,9 @@ public class BackgroundLocationUpdateService
             builder.setContentText(notificationText);
             builder.setSmallIcon(context.getApplicationInfo().icon);
             builder.setPriority(Notification.PRIORITY_DEFAULT);
-            builder.setChannelId("BLOSPlugin");
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                builder.setChannelId("BLOSPlugin");
+            }
 
             createNotificationChannel();
 
@@ -245,7 +247,7 @@ public class BackgroundLocationUpdateService
             setClickEvent(builder);
 
             Notification notification;
-            if (android.os.Build.VERSION.SDK_INT >= 16) {
+            if (Build.VERSION.SDK_INT >= 16) {
                 notification = buildForegroundNotification(builder);
             } else {
                 notification = buildForegroundNotificationCompat(builder);
