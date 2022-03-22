@@ -1,29 +1,26 @@
 package com.flybuy.cordova.location;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Iterator;
 import java.util.Random;
 
+import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 
 import android.app.NotificationChannel;
 import android.media.AudioManager;
 import android.media.ToneGenerator;
 
-import android.telephony.PhoneStateListener;
-import android.telephony.TelephonyManager;
-import static android.telephony.PhoneStateListener.*;
-import android.telephony.CellLocation;
 
-import android.app.AlarmManager;
 import android.app.NotificationManager;
 import android.app.Notification;
 import android.app.PendingIntent;
 import android.app.Service;
-import android.app.Activity;
 
 import android.content.Context;
 import android.content.Intent;
@@ -32,64 +29,47 @@ import android.content.BroadcastReceiver;
 
 import android.location.Location;
 import android.location.Criteria;
-import android.location.LocationListener;
-import android.location.LocationManager;
 
 import android.net.ConnectivityManager;
 import android.net.NetworkInfo;
 
-import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.IBinder;
-import android.os.PowerManager;
-import android.os.SystemClock;
 
 import android.util.Log;
 import android.widget.Toast;
 
+import com.google.android.gms.location.ActivityRecognitionClient;
+import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.LocationAvailability;
 import com.google.android.gms.location.LocationRequest;
+import com.google.android.gms.location.LocationResult;
 import com.google.android.gms.location.LocationServices;
-import com.google.android.gms.common.api.GoogleApiClient;
-import com.google.android.gms.location.FusedLocationProviderApi;
+import com.google.android.gms.location.DetectedActivity;
+import com.google.android.gms.location.ActivityRecognitionResult;
 
-import com.google.android.gms.common.api.GoogleApiClient.ConnectionCallbacks;
-import com.google.android.gms.common.api.GoogleApiClient.OnConnectionFailedListener;
-
-import static java.lang.Math.*;
 
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.util.DisplayMetrics;
 import android.content.res.Resources;
 
-
-import com.google.android.gms.location.ActivityRecognition;
-import com.google.android.gms.location.DetectedActivity;
-import com.google.android.gms.location.ActivityRecognitionResult;
-import java.util.ArrayList;
-import java.util.Set;
-
-import com.google.android.gms.common.ConnectionResult;
-
 //Detected Activities imports
 
 public class BackgroundLocationUpdateService
-        extends Service
-        implements GoogleApiClient.ConnectionCallbacks, GoogleApiClient.OnConnectionFailedListener {
+        extends Service{
 
-    private static final String TAG = "BgLocationUpdateService";
+    private static final String TAG = "BackgroundLocationUpdateService";
 
-    private Location lastLocation;
+    private List<Location> lastLocations;
     private DetectedActivity lastActivity;
     private long lastUpdateTime = 0l;
     private Boolean fastestSpeed = false;
 
     private PendingIntent locationUpdatePI;
-    private GoogleApiClient locationClientAPI;
+    private FusedLocationProviderClient fusedLocationProviderClient;
     private PendingIntent detectedActivitiesPI;
-    private GoogleApiClient detectedActivitiesAPI;
 
     private Integer desiredAccuracy = 100;
     private Integer distanceFilter  = 30;
@@ -120,6 +100,8 @@ public class BackgroundLocationUpdateService
     private NotificationManager notificationManager;
 
     private LocationRequest locationRequest;
+    private Context mContext;
+    private ActivityRecognitionClient mActivityRecognitionClient;
 
 
     @Override
@@ -204,14 +186,14 @@ public class BackgroundLocationUpdateService
 
             Context context = getApplicationContext();
 
+            mContext = context;
+
             Notification.Builder builder = new Notification.Builder(this);
             builder.setContentTitle(notificationTitle);
             builder.setContentText(notificationText);
             builder.setSmallIcon(context.getApplicationInfo().icon);
             builder.setPriority(Notification.PRIORITY_DEFAULT);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                builder.setChannelId("BLOSPlugin");
-            }
+            builder.setChannelId("BLOSPlugin");
 
             createNotificationChannel();
 
@@ -247,7 +229,7 @@ public class BackgroundLocationUpdateService
             setClickEvent(builder);
 
             Notification notification;
-            if (Build.VERSION.SDK_INT >= 16) {
+            if (android.os.Build.VERSION.SDK_INT >= 16) {
                 notification = buildForegroundNotification(builder);
             } else {
                 notification = buildForegroundNotificationCompat(builder);
@@ -318,31 +300,47 @@ public class BackgroundLocationUpdateService
     private BroadcastReceiver locationUpdateReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            String key = FusedLocationProviderApi.KEY_LOCATION_CHANGED;
-            Location location = (Location)intent.getExtras().get(key);
+            if (intent != null) {
+                LocationResult result = LocationResult.extractResult(intent);
+                if (result != null) {
+                    List<Location> locations = result.getLocations();
+                    if (!locations.isEmpty()) {
+                        if (isDebugging) {
+                            Log.d(TAG, "- locationUpdateReceiver" + locations.toString());
+                        }
 
-            if (location != null) {
+                        // Go ahead and cache, push to server
+                        lastLocations = locations;
 
-                if(isDebugging) {
-                    Log.d(TAG, "- locationUpdateReceiver" + location.toString());
-                }
+                        try {
+                            //This is all for setting the callback for android which currently does not work
+                            Intent mIntent = new Intent(Constants.CALLBACK_LOCATION_UPDATE);
+                            mIntent.putExtras(createLocationsBundle(locations));
+                            getApplicationContext().sendBroadcast(mIntent);
+                        } catch (JSONException e) {
+                            if (isDebugging) {
+                                Log.e(TAG, "- locationUpdateReceiver " + e.getLocalizedMessage());
+                            }
+                        }
+                    } else {
+                        LocationAvailability la = LocationAvailability.extractLocationAvailability(intent);
+                        boolean isAvailable = la.isLocationAvailable();
 
-              // Go ahead and cache, push to server
-              lastLocation = location;
+                        if (!isAvailable) {
+                            Intent mIntent = new Intent(Constants.CALLBACK_LOCATION_UPDATE);
+                            mIntent.putExtra("error", "Location Provider is not available. Maybe GPS is disabled or the provider was rejected?");
+                            getApplicationContext().sendBroadcast(mIntent);
+                        }
+                    }
+                } else {
+                    LocationAvailability la = LocationAvailability.extractLocationAvailability(intent);
+                    boolean isAvailable = la.isLocationAvailable();
 
-              //This is all for setting the callback for android which currently does not work
-               Intent mIntent = new Intent(Constants.CALLBACK_LOCATION_UPDATE);
-               mIntent.putExtras(createLocationBundle(location));
-               getApplicationContext().sendBroadcast(mIntent);
-
-            } else {
-                LocationAvailability la = LocationAvailability.extractLocationAvailability(intent);
-                Boolean isAvailable = la.isLocationAvailable();
-
-                if(isAvailable == false) {
-                    Intent mIntent = new Intent(Constants.CALLBACK_LOCATION_UPDATE);
-                    mIntent.putExtra("error", "Location Provider is not available. Maybe GPS is disabled or the provider was rejected?");
-                    getApplicationContext().sendBroadcast(mIntent);
+                    if (!isAvailable) {
+                        Intent mIntent = new Intent(Constants.CALLBACK_LOCATION_UPDATE);
+                        mIntent.putExtra("error", "Location Provider is not available. Maybe GPS is disabled or the provider was rejected?");
+                        getApplicationContext().sendBroadcast(mIntent);
+                    }
                 }
             }
         }
@@ -357,6 +355,7 @@ public class BackgroundLocationUpdateService
     private BroadcastReceiver detectedActivitiesReceiver = new BroadcastReceiver() {
       @Override
       public void onReceive(Context context, Intent intent) {
+
         ActivityRecognitionResult result = ActivityRecognitionResult.extractResult(intent);
         ArrayList<DetectedActivity> detectedActivities = (ArrayList) result.getProbableActivities();
 
@@ -410,29 +409,25 @@ public class BackgroundLocationUpdateService
         return notification.setContentIntent(contentIntent);
     }
 
-    private Bundle createLocationBundle(Location location) {
-      Bundle b = new Bundle();
-      b.putDouble("latitude", location.getLatitude());
-      b.putDouble("longitude", location.getLongitude());
-      b.putDouble("accuracy", location.getAccuracy());
-      b.putDouble("altitude", location.getAltitude());
-      b.putDouble("timestamp", location.getTime());
-      b.putDouble("speed", location.getSpeed());
-      b.putDouble("heading", location.getBearing());
+    private Bundle createLocationsBundle(List<Location> locations) throws JSONException {
+        Bundle b = new Bundle();
+        JSONArray jsonLocations = new JSONArray();
+        for (Location location:locations) {
+            JSONObject jsonLoc = new JSONObject();
+            jsonLoc.put("latitude",location.getLatitude());
+            jsonLoc.put("longitude",location.getLongitude());
+            jsonLoc.put("accuracy",location.getAccuracy());
+            jsonLoc.put("altitude",location.getAltitude());
+            jsonLoc.put("timestamp",location.getTime());
+            jsonLoc.put("speed",location.getSpeed());
+            jsonLoc.put("heading",location.getBearing());
+            jsonLocations.put(jsonLoc);
+        }
+        b.putString("locations",jsonLocations.toString());
 
       return b;
     }
 
-    private boolean enabled = false;
-    private boolean startRecordingOnConnect = true;
-
-    private void enable() {
-        this.enabled = true;
-    }
-
-    private void disable() {
-        this.enabled = false;
-    }
 
     private void setStartAggressiveTrackingOn() {
         if(!fastestSpeed && this.isRecording) {
@@ -460,147 +455,77 @@ public class BackgroundLocationUpdateService
     }
 
     private void attachDARecorder() {
-      if (detectedActivitiesAPI == null) {
+      if (mActivityRecognitionClient == null) {
           buildDAClient();
-      } else if (detectedActivitiesAPI.isConnected()) {
-        ActivityRecognition.ActivityRecognitionApi.requestActivityUpdates(
-                        detectedActivitiesAPI,
-                        this.activitiesInterval,
-                        detectedActivitiesPI
-                );
-          if(isDebugging) {
-              Log.d(TAG, "- DA RECORDER attached - start recording location updates");
-          }
-      } else {
-        Log.i(TAG, "NOT CONNECTED, CONNECT");
-          detectedActivitiesAPI.connect();
+      }
+        mActivityRecognitionClient.requestActivityUpdates(
+                    this.activitiesInterval,
+                    detectedActivitiesPI
+            );
+      if(isDebugging) {
+          Log.d(TAG, "- DA RECORDER attached - start recording location updates");
       }
     }
 
     private void detatchDARecorder() {
-      if (detectedActivitiesAPI == null) {
+      if (mActivityRecognitionClient == null) {
           buildDAClient();
-      } else if (detectedActivitiesAPI.isConnected()) {
-        ActivityRecognition.ActivityRecognitionApi.removeActivityUpdates(detectedActivitiesAPI, detectedActivitiesPI);
-          if(isDebugging) {
-              Log.d(TAG, "- Recorder detached - stop recording activity updates");
-          }
-      } else {
-          detectedActivitiesAPI.connect();
+      }
+      mActivityRecognitionClient.removeActivityUpdates(detectedActivitiesPI);
+      if(isDebugging) {
+          Log.d(TAG, "- Recorder detached - stop recording activity updates");
       }
     }
 
 
     public void startRecording() {
         Log.w(TAG, "Started Recording Locations");
-        this.startRecordingOnConnect = true;
         attachRecorder();
     }
 
     public void stopRecording() {
-        this.startRecordingOnConnect = false;
         detachRecorder();
     }
 
-    private GoogleApiClient.ConnectionCallbacks cb = new GoogleApiClient.ConnectionCallbacks() {
-           @Override
-           public void onConnected(Bundle bundle) {
-               Log.w(TAG, "Activity Client Connected");
-               ActivityRecognition.ActivityRecognitionApi.requestActivityUpdates(
-                       detectedActivitiesAPI,
-                       activitiesInterval,
-                       detectedActivitiesPI
-               );
-           }
-           @Override
-           public void onConnectionSuspended(int i) {
-               Log.w(TAG, "Connection To Activity Suspended");
-               showDebugToast(getApplicationContext(), "Activity Client Suspended");
-           }
-       };
-
-      private GoogleApiClient.OnConnectionFailedListener failedCb = new GoogleApiClient.OnConnectionFailedListener() {
-           @Override
-           public void onConnectionFailed(ConnectionResult cr) {
-               Log.w(TAG, "ERROR CONNECTING TO DETECTED ACTIVITIES");
-           }
-       };
-
     protected synchronized void buildDAClient() {
       Log.i(TAG, "BUILDING DA CLIENT");
-         detectedActivitiesAPI = new GoogleApiClient.Builder(this)
-                 .addApi(ActivityRecognition.API)
-                 .addConnectionCallbacks(cb)
-                 .addOnConnectionFailedListener(failedCb)
-                 .build();
+        mActivityRecognitionClient =
+                new ActivityRecognitionClient(mContext);
 
-        detectedActivitiesAPI.connect();
     }
 
-    protected synchronized void connectToPlayAPI() {
-        locationClientAPI =  new GoogleApiClient.Builder(this)
-                .addApi(LocationServices.API)
-                .addConnectionCallbacks(this)
-                .addOnConnectionFailedListener(this)
-                .build();
-        locationClientAPI.connect();
-    }
-
+    @SuppressLint("MissingPermission")
     private void attachRecorder() {
-      Log.i(TAG, "Attaching Recorder");
-        if (locationClientAPI == null) {
-            connectToPlayAPI();
-        } else if (locationClientAPI.isConnected()) {
-            locationRequest = LocationRequest.create()
-                    .setPriority(translateDesiredAccuracy(desiredAccuracy))
-                    .setFastestInterval(fastestInterval)
-                    .setInterval(interval)
-                    .setSmallestDisplacement(distanceFilter);
-            LocationServices.FusedLocationApi.requestLocationUpdates(locationClientAPI, locationRequest, locationUpdatePI);
-            this.isRecording = true;
-
-            if(isDebugging) {
-                Log.d(TAG, "- Recorder attached - start recording location updates");
-            }
-        } else {
-            locationClientAPI.connect();
+        Log.i(TAG, "Attaching Recorder");
+        if (fusedLocationProviderClient == null){
+            fusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(mContext);
         }
+
+        locationRequest = LocationRequest.create()
+                .setPriority(translateDesiredAccuracy(desiredAccuracy))
+                .setFastestInterval(fastestInterval)
+                .setInterval(interval)
+                .setSmallestDisplacement(distanceFilter);
+        fusedLocationProviderClient.requestLocationUpdates(locationRequest, locationUpdatePI);
+        this.isRecording = true;
+
+        if(isDebugging) {
+            Log.d(TAG, "- Recorder attached - start recording location updates");
+        }
+
     }
 
     private void detachRecorder() {
-        if (locationClientAPI == null) {
-            connectToPlayAPI();
-        } else if (locationClientAPI.isConnected()) {
-            //flush the location updates from the api
-            LocationServices.FusedLocationApi.removeLocationUpdates(locationClientAPI, locationUpdatePI);
-            this.isRecording = false;
-            if(isDebugging) {
-                Log.w(TAG, "- Recorder detached - stop recording location updates");
-            }
-        } else {
-            locationClientAPI.connect();
+        if (fusedLocationProviderClient == null){
+            fusedLocationProviderClient = LocationServices.getFusedLocationProviderClient(mContext);
+        }
+        fusedLocationProviderClient.removeLocationUpdates(locationUpdatePI);
+        this.isRecording = false;
+        if(isDebugging) {
+            Log.w(TAG, "- Recorder detached - stop recording location updates");
         }
     }
 
-    @Override
-    public void onConnected(Bundle connectionHint) {
-        Log.d(TAG, "- Connected to Play API -- All ready to record");
-        if (this.startRecordingOnConnect) {
-            attachRecorder();
-        } else {
-            detachRecorder();
-        }
-    }
-
-    @Override
-    public void onConnectionFailed(com.google.android.gms.common.ConnectionResult result) {
-        Log.e(TAG, "We failed to connect to the Google API! Possibly API is not installed on target.");
-    }
-
-    @Override
-    public void onConnectionSuspended(int cause) {
-        // locationClientAPI.connect();
-    }
 
     @TargetApi(16)
     private Notification buildForegroundNotification(Notification.Builder builder) {
@@ -680,9 +605,6 @@ public class BackgroundLocationUpdateService
 
 
         toneGenerator.release();
-        if(locationClientAPI != null) {
-            locationClientAPI.disconnect();
-        }
 
     }
 

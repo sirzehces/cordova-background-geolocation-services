@@ -8,8 +8,6 @@ import org.apache.cordova.PluginResult;
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
-import java.util.ArrayList;
-import java.util.List;
 
 import android.Manifest;
 import android.app.Activity;
@@ -18,8 +16,6 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.location.Location;
-import android.location.LocationManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -31,9 +27,10 @@ import android.content.ComponentName;
 
 import com.google.android.gms.location.DetectedActivity;
 import java.util.ArrayList;
+import java.util.List;
 
 public class BackgroundLocationServicesPlugin extends CordovaPlugin {
-    private static final String TAG = "BgLocationServicePlugin";
+    private static final String TAG = "BackgroundLocationServicesPlugin";
     private static final String PLUGIN_VERSION = "1.0";
 
     public static final String ACTION_START = "start";
@@ -46,9 +43,6 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
     public static final String ACTION_REGISTER_FOR_ACTIVITY_UPDATES = "registerForActivityUpdates";
 
     public static String APP_NAME = "";
-    
-    private List<PluginResult> locationUpdateQueue = new ArrayList<>();
-    private List<PluginResult> detectedActivitiesQueue = new ArrayList<>();
 
     private Boolean isEnabled = false;
     private Boolean inBackground = false;
@@ -125,9 +119,6 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
                     if(detectedActivitiesCallback != null) {
                         PluginResult pluginResult = new PluginResult(PluginResult.Status.OK, daJSON);
                         pluginResult.setKeepCallback(true);
-                        if(inBackground){
-                            detectedActivitiesQueue.add(pluginResult);
-                        }
                         detectedActivitiesCallback.sendPluginResult(pluginResult);
                     }
                 }
@@ -149,12 +140,10 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
 
                 final Bundle b = intent.getExtras();
                 final String errorString = b.getString("error");
-                
-                
 
                 cordova.getThreadPool().execute(new Runnable() {
                     public void run() {
-                        PluginResult pluginResult;
+                        PluginResult pluginResult = null;
 
                         if(b == null) {
                             String unkownError = "An Unkown Error has occurred, there was no Location attached";
@@ -165,15 +154,20 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
                             pluginResult = new PluginResult(PluginResult.Status.ERROR, errorString);
 
                         } else {
-                            JSONObject data = locationToJSON(intent.getExtras());
-                            pluginResult = new PluginResult(PluginResult.Status.OK, data);
+                            try{
+                                JSONArray locationsJson = new JSONArray(b.getString("locations"));
+                                for (int i = 0; i < locationsJson.length(); i++) {
+                                    JSONObject location = locationsJson.getJSONObject(i);
+                                    pluginResult = new PluginResult(PluginResult.Status.OK, location);
+                                }
+                            }catch (JSONException e){
+                                Log.d(TAG, "ERROR CREATING JSON" + e);
+                                pluginResult = new PluginResult(PluginResult.Status.ERROR, "ERROR CREATING JSON" + e);
+                            }
                         }
 
                         if(pluginResult != null) {
                             pluginResult.setKeepCallback(true);
-                            if(inBackground){
-                                locationUpdateQueue.add(pluginResult);
-                            }
                             locationUpdateCallback.sendPluginResult(pluginResult);
                         }
                     }
@@ -220,15 +214,32 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
             updateServiceIntent.putExtra("aggressiveInterval", aggressiveInterval);
             updateServiceIntent.putExtra("activitiesInterval", activitiesInterval);
             updateServiceIntent.putExtra("useActivityDetection", useActivityDetection);
-
-            if (hasPermisssion()) {
-                isServiceBound = bindServiceToWebview(activity, updateServiceIntent);
-                isEnabled = true;
-                callbackContext.success();
-            } else {
-                startCallback = callbackContext;
-                PermissionHelper.requestPermissions(this, START_REQ_CODE, permissions);
+            if(Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q){
+                String[] permissions = new String[3];
+                System.arraycopy(this.permissions, 0, permissions, 0, this.permissions.length);
+                permissions[2] = Manifest.permission.ACTIVITY_RECOGNITION;
+                if (hasPermisssion()) {
+                    isServiceBound = bindServiceToWebview(activity, updateServiceIntent);
+                    isEnabled = true;
+                    callbackContext.success();
+                } else if (!hasPermisssion(permissions)){
+                    startCallback = callbackContext;
+                    PermissionHelper.requestPermissions(this, START_REQ_CODE, permissions);
+                }else if(!hasPermisssion(Manifest.permission.ACCESS_BACKGROUND_LOCATION)){
+                    startCallback = callbackContext;
+                    PermissionHelper.requestPermission(this, START_REQ_CODE, Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+                }
+            }else{
+                if (hasPermisssion()) {
+                    isServiceBound = bindServiceToWebview(activity, updateServiceIntent);
+                    isEnabled = true;
+                    callbackContext.success();
+                } else{
+                    startCallback = callbackContext;
+                    PermissionHelper.requestPermissions(this, START_REQ_CODE, permissions);
+                }
             }
+
 
         } else if (ACTION_STOP.equalsIgnoreCase(action)) {
             isEnabled = false;
@@ -347,7 +358,6 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
             Log.d(TAG, "- locationUpdateReceiver Paused (starting recording = " + String.valueOf(isEnabled) + ")");
         }
         if (isEnabled) {
-            inBackground = true;
             Activity activity = this.cordova.getActivity();
             activity.sendBroadcast(new Intent(Constants.START_RECORDING));
         }
@@ -359,18 +369,9 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
             Log.d(TAG, "- locationUpdateReceiver Resumed (stopping recording)" + String.valueOf(isEnabled));
         }
         if (isEnabled) {
-            inBackground = false;
             Activity activity = this.cordova.getActivity();
             activity.sendBroadcast(new Intent(Constants.STOP_RECORDING));
         }
-        for(PluginResult result : locationUpdateQueue){
-            locationUpdateCallback.sendPluginResult(result);
-        }
-        locationUpdateQueue.clear();
-        for(PluginResult result : detectedActivitiesQueue){
-            detectedActivitiesCallback.sendPluginResult(result);
-        }
-        detectedActivitiesQueue.clear();
     }
 
 
@@ -384,25 +385,7 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
             }
         }
     }
-
-    private JSONObject locationToJSON(Bundle b) {
-        JSONObject data = new JSONObject();
-        try {
-            data.put("latitude", b.getDouble("latitude"));
-            data.put("longitude", b.getDouble("longitude"));
-            data.put("accuracy", b.getDouble("accuracy"));
-            data.put("altitude", b.getDouble("altitude"));
-            data.put("timestamp", b.getDouble("timestamp"));
-            data.put("speed", b.getDouble("speed"));
-            data.put("heading", b.getDouble("heading"));
-        } catch(JSONException e) {
-            Log.d(TAG, "ERROR CREATING JSON" + e);
-        }
-
-        return data;
-    }
-
-    public boolean hasPermisssion() {
+    public boolean hasPermisssion(String[] permissions) {
         for(String p : permissions)
         {
             if(!PermissionHelper.hasPermission(this, p))
@@ -412,10 +395,21 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
         }
         return true;
     }
+    public boolean hasPermisssion(String permission) {
+        return PermissionHelper.hasPermission(this, permission);
+    }
 
+    public boolean hasPermisssion() {
+        boolean result = hasPermisssion(permissions);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            result = result && hasPermisssion(Manifest.permission.ACTIVITY_RECOGNITION);
+            result = result && hasPermisssion(Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+        }
+        return result;
+    }
 
-    public void onRequestPermissionResult(int requestCode, String[] permissions,
-                                          int[] grantResults) throws JSONException {
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) throws JSONException {
         for (int r : grantResults) {
             if (r == PackageManager.PERMISSION_DENIED) {
                 Log.d(TAG, "Permission Denied!");
@@ -429,10 +423,15 @@ public class BackgroundLocationServicesPlugin extends CordovaPlugin {
         }
         switch (requestCode) {
             case START_REQ_CODE:
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    PermissionHelper.requestPermission(this,1, Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+                }
                 isServiceBound = bindServiceToWebview(cordova.getActivity(), updateServiceIntent);
                 isEnabled = true;
                 break;
         }
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+
     }
 
 
