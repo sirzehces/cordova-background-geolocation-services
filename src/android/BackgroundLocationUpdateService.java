@@ -182,7 +182,7 @@ public class BackgroundLocationUpdateService
             // Build the notification / pending intent
             Intent main = new Intent(this, BackgroundLocationServicesPlugin.class);
             main.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, main,  PendingIntent.FLAG_UPDATE_CURRENT);
+            PendingIntent pendingIntent = PendingIntent.getActivity(this, 0, main,  PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
 
             Context context = getApplicationContext();
 
@@ -404,7 +404,7 @@ public class BackgroundLocationUpdateService
 
         int requestCode = new Random().nextInt();
 
-        PendingIntent contentIntent = PendingIntent.getActivity(context, requestCode, launchIntent, PendingIntent.FLAG_CANCEL_CURRENT);
+        PendingIntent contentIntent = PendingIntent.getActivity(context, requestCode, launchIntent,PendingIntent.FLAG_IMMUTABLE |  PendingIntent.FLAG_CANCEL_CURRENT);
 
         return notification.setContentIntent(contentIntent);
     }
